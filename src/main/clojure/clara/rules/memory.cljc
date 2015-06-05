@@ -158,7 +158,8 @@
                                ^:unsynchronized-mutable beta-memory
                                ^:unsynchronized-mutable accum-memory
                                ^:unsynchronized-mutable production-memory
-                               ^java.util.TreeMap activation-map]
+                               #?(:clj ^java.util.TreeMap activation-map)
+                               #?(:cljs                 activation-map)]
 
   IMemoryReader
   (get-rulebase [memory] rulebase)
@@ -180,6 +181,10 @@
     (vals (get beta-memory (:id node) {})))
 
   (get-accum-reduced [memory node join-bindings fact-bindings]
+    ;; Comment from memory.cljs
+    ;; nil is a valid previously reduced value that can be found in the map.
+    ;; Return ::no-accum-reduced instead of nil when there is no previously
+    ;; reduced value in memory.
     (get-in accum-memory [(:id node) join-bindings fact-bindings] ::no-accum-reduced))
 
   (get-accum-reduced-all [memory node join-bindings]
@@ -285,41 +290,96 @@
 
       results))
 
-  (add-activations! [memory production new-activations]
-    (let [activation-group (activation-group-fn production)
-          previous (.get activation-map activation-group)]
-      (.put activation-map activation-group
-            (if previous
-              (into previous new-activations)
-              new-activations))))
+  #?(:clj
+     (add-activations! [memory production new-activations]
+                       (let [activation-group (activation-group-fn production)
+                             previous (.get activation-map activation-group)]
+                         (.put activation-map activation-group
+                               (if previous
+                                 (into previous new-activations)
+                                 new-activations))))
 
-  (pop-activation! [memory]
-    (when (not (.isEmpty activation-map))
-      (let [^java.util.Map$Entry entry (.firstEntry activation-map)
-            key (.getKey entry)
-            value (.getValue entry)
-            remaining (rest value)]
+     :cljs
+     (add-activations! [memory production new-activations]
+                       (let [activation-group (activation-group-fn production)
+                             previous (get activation-map activation-group)]
 
-        (if (empty? remaining)
-          (.remove activation-map key)
-          (.put activation-map key remaining))
+                         (set! activation-map
+                               (assoc activation-map
+                                 activation-group
+                                 (if previous
+                                   (into previous new-activations)
+                                   new-activations))))))
 
-        (first value))))
+  #?(:clj
+     (pop-activation! [memory]
+                      (when (not (.isEmpty activation-map))
+                        (let [^java.util.Map$Entry entry (.firstEntry activation-map)
+                              key (.getKey entry)
+                              value (.getValue entry)
+                              remaining (rest value)]
 
-  (next-activation-group [memory]
-    (when (not (.isEmpty activation-map))
-      (let [^java.util.Map$Entry entry (.firstEntry activation-map)]
-        (.getKey entry))))
+                          (if (empty? remaining)
+                            (.remove activation-map key)
+                            (.put activation-map key remaining))
 
-  (remove-activations! [memory production to-remove]
-    (let [activation-group (activation-group-fn production)]
-      (.put activation-map
-            activation-group
-            (second (remove-first-of-each to-remove
-                                          (.get activation-map activation-group))))))
+                          (first value))))
 
-  (clear-activations! [memory]
-    (.clear activation-map))
+     :cljs
+     (pop-activation! [memory]
+                      (when (not (empty? activation-map))
+                        (let [[key value] (first activation-map)
+                              remaining (rest value)]
+
+                          (set! activation-map
+                                (if (empty? remaining)
+                                  (dissoc activation-map key)
+                                  (assoc activation-map key remaining)))
+
+                          (first value))))
+
+     )
+
+  #?(:clj
+     (next-activation-group [memory]
+                            (when (not (.isEmpty activation-map))
+                              (let [^java.util.Map$Entry entry (.firstEntry activation-map)]
+                                (.getKey entry))))
+
+     :cljs
+     (next-activation-group [memory]
+                            (let [[key val] (first activation-map)]
+                              key))
+     )
+
+  #?(:clj
+     (remove-activations! [memory production to-remove]
+                          (let [activation-group (activation-group-fn production)]
+                            (.put activation-map
+                                  activation-group
+                                  (second (remove-first-of-each to-remove
+                                                                (.get activation-map activation-group))))))
+
+     :cljs
+     (remove-activations! [memory production to-remove]
+                          (let [activation-group (activation-group-fn production)]
+                            (set! activation-map
+                                  (assoc activation-map
+                                    activation-group
+                                    (second (remove-first-of-each to-remove
+                                                                  (get activation-map activation-group)))))))
+
+     )
+
+  #?(:clj
+     (clear-activations! [memory]
+                         (.clear activation-map))
+
+     :cljs
+     (clear-activations! [memory]
+                         (set! activation-map (sorted-map-by activation-group-sort-fn)))
+
+     )
 
   (to-persistent! [memory]
 
@@ -398,16 +458,28 @@
                            (transient beta-memory)
                            (transient accum-memory)
                            (transient production-memory)
-                           (reduce
-                            (fn [^java.util.TreeMap treemap [activation-group activations]]
-                              (let [previous (.get treemap activation-group)]
-                                (.put treemap activation-group
-                                      (if previous
-                                        (into previous activations)
-                                        activations)))
-                              treemap)
-                            (java.util.TreeMap. ^java.util.Comparator activation-group-sort-fn)
-                            activation-map))))
+                           #?(:clj
+                              (reduce
+                                (fn [^java.util.TreeMap treemap [activation-group activations]]
+                                  (let [previous (.get treemap activation-group)]
+                                    (.put treemap activation-group
+                                          (if previous
+                                            (into previous activations)
+                                            activations)))
+                                  treemap)
+                                (java.util.TreeMap. ^java.util.Comparator activation-group-sort-fn)
+                                activation-map)
+
+                              :cljs
+                              (reduce
+                                (fn [treemap [activation-group activations]]
+                                  (let [previous (get treemap activation-group)]
+                                    (assoc treemap activation-group
+                                                   (if previous
+                                                     (into previous activations)
+                                                     activations))))
+                                (sorted-map-by activation-group-sort-fn)
+                                activation-map)))))
 
 (defn local-memory
   "Creates an persistent local memory for the given rule base."
@@ -420,4 +492,8 @@
                            {}
                            {}
                            {}
-                           []))
+                           #?(:clj
+                              []
+                              :cljs
+                              {}
+                              )))

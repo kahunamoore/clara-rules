@@ -1,12 +1,19 @@
 (ns clara.rules.platform
-  "Code specific to the JVM platform.")
+  "Code specific to the JVM and JavaScript platform.")
 
-(defn throw-error
-  "Throw an error with the given description string."
-  [^String description]
-  (throw (IllegalArgumentException. description)))
+#?(:clj
+   (defn throw-error
+     "Throw an error with the given description string."
+     [^String description]
+     (throw (IllegalArgumentException. description)))
+   :cljs
+   (defn throw-error
+     "Throw an error with the given description string."
+     [description]
+     (throw (js/Error. description))))
 
-(defn tuned-group-by
+#?(:clj
+   (defn tuned-group-by
   "Equivalent of the built-in group-by, but tuned for when there are many values per key."
   [f coll]
   (->> coll
@@ -21,3 +28,7 @@
                   (assoc! map key (persistent! value)))
                 (transient {}))
       (persistent!)))
+   :cljs
+   ;; The tuned group-by function is JVM-specific,
+   ;; so just defer to provided group-by for ClojureScript.
+   (def tuned-group-by clojure.core/group-by))
